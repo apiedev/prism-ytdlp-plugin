@@ -84,7 +84,13 @@ static void ytdlp_plugin_shutdown(void) {
 }
 
 static PrismError ytdlp_plugin_register(PrismPluginRegistry* registry) {
-    return prism_register_resolver(registry, PRISM_YTDLP_PLUGIN_ID, &g_ytdlp_resolver_factory);
+    (void)registry;
+    /* Registration is handled by the core when it loads this plugin.
+     * The core calls prism_ytdlp_get_factory() to get the resolver factory.
+     * Direct linking to prism_register_resolver is not needed since the
+     * plugin DLL is loaded dynamically by the core.
+     */
+    return PRISM_OK;
 }
 
 /* ============================================================================
@@ -111,6 +117,6 @@ PRISM_PLUGIN_EXPORT PrismError PRISM_CALL prism_plugin_register(PrismPluginRegis
  * Public API
  * ========================================================================== */
 
-PRISM_API const PrismResolverFactory* prism_ytdlp_get_factory(void) {
+PRISM_YTDLP_API const PrismResolverFactory* prism_ytdlp_get_factory(void) {
     return &g_ytdlp_resolver_factory;
 }

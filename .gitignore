@@ -1,0 +1,17 @@
+# Build artifacts
+build/
+cmake-build-*/
+
+# IDE files
+.vs/
+.vscode/
+*.user
+*.suo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# yt-dlp binary (downloaded at runtime)
+yt-dlp
+yt-dlp.exe

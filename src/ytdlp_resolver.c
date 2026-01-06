@@ -684,7 +684,7 @@ PrismError prism_ytdlp_download(
  * Public API
  * ========================================================================== */
 
-PRISM_API bool prism_ytdlp_is_available(void) {
+PRISM_YTDLP_API bool prism_ytdlp_is_available(void) {
     if (g_config.ytdlp_path[0]) {
         return file_exists(g_config.ytdlp_path);
     }
@@ -698,14 +698,14 @@ PRISM_API bool prism_ytdlp_is_available(void) {
     return false;
 }
 
-PRISM_API const char* prism_ytdlp_get_path(void) {
+PRISM_YTDLP_API const char* prism_ytdlp_get_path(void) {
     if (!prism_ytdlp_is_available()) {
         return NULL;
     }
     return g_config.ytdlp_path;
 }
 
-PRISM_API void prism_ytdlp_configure(const PrismYtdlpConfig* config) {
+PRISM_YTDLP_API void prism_ytdlp_configure(const PrismYtdlpConfig* config) {
     if (!config) return;
 
     if (config->ytdlp_path) {

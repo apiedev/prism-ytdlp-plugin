@@ -29,8 +29,12 @@ if(NOT PRISM_CORE_DIR)
     set(PRISM_CORE_DIR "${CMAKE_SOURCE_DIR}/../prism-video/Native" CACHE PATH "Path to prism-video/Native")
 endif()
 
+# Convert to absolute path to handle relative paths correctly
+get_filename_component(PRISM_CORE_DIR "${PRISM_CORE_DIR}" ABSOLUTE BASE_DIR "${CMAKE_SOURCE_DIR}")
+
 if(EXISTS "${PRISM_CORE_DIR}/include/prism/prism.h")
     message(STATUS "Found Prism Core at: ${PRISM_CORE_DIR}")
+    message(STATUS "Prism Core include: ${PRISM_CORE_DIR}/include")
 else()
     message(FATAL_ERROR "Prism Core not found at ${PRISM_CORE_DIR}. Set PRISM_CORE_DIR to point to prism-video/Native")
 endif()
@@ -116,6 +120,51 @@ else()
     )
 
     target_link_libraries(prism_ytdlp PRIVATE pthread)
+endif()
+
+# ============================================================================
+# Test Executable
+# ============================================================================
+
+option(BUILD_TESTS "Build test executables" ON)
+
+if(BUILD_TESTS)
+    add_executable(prism_ytdlp_tests
+        test/ytdlp_resolver_tests.c
+    )
+
+    target_include_directories(prism_ytdlp_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/test
+        ${PRISM_CORE_DIR}/include
+    )
+
+    if(WIN32)
+        target_compile_definitions(prism_ytdlp_tests PRIVATE
+            _CRT_SECURE_NO_WARNINGS
+            WIN32_LEAN_AND_MEAN
+        )
+        target_link_libraries(prism_ytdlp_tests PRIVATE
+            prism_ytdlp
+            urlmon
+            shell32
+        )
+    elseif(APPLE)
+        target_link_libraries(prism_ytdlp_tests PRIVATE
+            prism_ytdlp
+        )
+    else()
+        target_link_libraries(prism_ytdlp_tests PRIVATE
+            prism_ytdlp
+            pthread
+        )
+    endif()
+
+    set_target_properties(prism_ytdlp_tests PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    )
+
+    message(STATUS "Building test executable: prism_ytdlp_tests")
 endif()
 
 # ============================================================================

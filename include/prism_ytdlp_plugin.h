@@ -15,6 +15,17 @@
 extern "C" {
 #endif
 
+/* Plugin export macro */
+#ifdef _WIN32
+    #ifdef PRISM_YTDLP_EXPORTS
+        #define PRISM_YTDLP_API __declspec(dllexport)
+    #else
+        #define PRISM_YTDLP_API __declspec(dllimport)
+    #endif
+#else
+    #define PRISM_YTDLP_API __attribute__((visibility("default")))
+#endif
+
 /* Plugin version */
 #define PRISM_YTDLP_PLUGIN_VERSION "1.0.0"
 
@@ -33,18 +44,18 @@ typedef struct PrismYtdlpConfig {
  * Get the yt-dlp resolver factory.
  * Can be used to manually create resolvers without going through the plugin system.
  */
-PRISM_API const PrismResolverFactory* prism_ytdlp_get_factory(void);
+PRISM_YTDLP_API const PrismResolverFactory* prism_ytdlp_get_factory(void);
 
 /*
  * Check if yt-dlp is available (installed or downloadable).
  */
-PRISM_API bool prism_ytdlp_is_available(void);
+PRISM_YTDLP_API bool prism_ytdlp_is_available(void);
 
 /*
  * Get the path to the yt-dlp binary.
  * Returns NULL if not found.
  */
-PRISM_API const char* prism_ytdlp_get_path(void);
+PRISM_YTDLP_API const char* prism_ytdlp_get_path(void);
 
 /*
  * Download yt-dlp binary to the specified directory.
@@ -52,7 +63,7 @@ PRISM_API const char* prism_ytdlp_get_path(void);
  * progress_callback is called with values 0.0-1.0 during download.
  * Returns PRISM_OK on success.
  */
-PRISM_API PrismError prism_ytdlp_download(
+PRISM_YTDLP_API PrismError prism_ytdlp_download(
     const char* install_dir,
     void (*progress_callback)(float progress, void* user_data),
     void* user_data
@@ -62,7 +73,7 @@ PRISM_API PrismError prism_ytdlp_download(
  * Set configuration options.
  * Call before any resolve operations.
  */
-PRISM_API void prism_ytdlp_configure(const PrismYtdlpConfig* config);
+PRISM_YTDLP_API void prism_ytdlp_configure(const PrismYtdlpConfig* config);
 
 #ifdef __cplusplus
 }
