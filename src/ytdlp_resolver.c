@@ -16,12 +16,16 @@
 #include <ctype.h>
 
 #ifdef _WIN32
-    #define WIN32_LEAN_AND_MEAN
+    #ifndef WIN32_LEAN_AND_MEAN
+        #define WIN32_LEAN_AND_MEAN
+    #endif
     #include <windows.h>
     #include <shlobj.h>
     #include <urlmon.h>
     #pragma comment(lib, "urlmon.lib")
     #pragma comment(lib, "shell32.lib")
+    /* strtok_r is strtok_s on Windows */
+    #define strtok_r strtok_s
 #else
     #include <unistd.h>
     #include <sys/wait.h>
@@ -626,7 +630,7 @@ PrismError prism_ytdlp_download(
         return PRISM_OK;
     }
 
-    return PRISM_ERROR_IO;
+    return PRISM_ERROR_NETWORK;
 }
 
 #else /* POSIX */
@@ -666,7 +670,7 @@ PrismError prism_ytdlp_download(
     free_process_result(&result);
 
     if (!file_exists(target_path)) {
-        return PRISM_ERROR_IO;
+        return PRISM_ERROR_NETWORK;
     }
 
     /* Make executable */
@@ -759,36 +763,51 @@ static bool ytdlp_can_resolve(PrismResolver* resolver, const char* url) {
     return false;
 }
 
-static PrismError ytdlp_resolve(
+static PrismResolvedStream* ytdlp_resolve(
     PrismResolver* resolver,
     const char* url,
-    PrismStreamQuality quality,
-    PrismResolvedStream* out_stream
+    const PrismResolverOptions* options
 ) {
     (void)resolver;
 
-    if (!url || !out_stream) {
-        return PRISM_ERROR_INVALID_PARAM;
+    PrismResolvedStream* stream = (PrismResolvedStream*)calloc(1, sizeof(PrismResolvedStream));
+    if (!stream) return NULL;
+
+    if (!url) {
+        stream->success = false;
+        stream->error = str_dup("URL is NULL");
+        return stream;
     }
 
-    memset(out_stream, 0, sizeof(*out_stream));
+    stream->original_url = str_dup(url);
 
     if (!ensure_ytdlp_available()) {
-        return PRISM_ERROR_NOT_FOUND;
+        stream->success = false;
+        stream->error = str_dup("yt-dlp not available");
+        return stream;
     }
+
+    /* Get quality from options */
+    PrismStreamQuality quality = options ? options->quality : PRISM_QUALITY_AUTO;
+    stream->requested_quality = quality;
 
     /* Build format argument based on quality */
     char format_arg[256];
     int height = 0;
 
     switch (quality) {
-        case PRISM_QUALITY_360P:  height = 360; break;
-        case PRISM_QUALITY_480P:  height = 480; break;
-        case PRISM_QUALITY_720P:  height = 720; break;
-        case PRISM_QUALITY_1080P: height = 1080; break;
-        case PRISM_QUALITY_1440P: height = 1440; break;
-        case PRISM_QUALITY_4K:    height = 2160; break;
-        default: height = 0; break;
+        case PRISM_QUALITY_LOW:    height = 360; break;
+        case PRISM_QUALITY_MEDIUM: height = 480; break;
+        case PRISM_QUALITY_HIGH:   height = 720; break;
+        case PRISM_QUALITY_FULL:   height = 1080; break;
+        case PRISM_QUALITY_QHD:    height = 1440; break;
+        case PRISM_QUALITY_4K:     height = 2160; break;
+        default:
+            /* For numeric values like 360, 720, etc., use directly */
+            if (quality > 0 && quality <= 4320) {
+                height = (int)quality;
+            }
+            break;
     }
 
     /* Check if live stream first */
@@ -804,7 +823,7 @@ static PrismError ytdlp_resolve(
     }
     free_process_result(&live_check);
 
-    out_stream->is_live = is_live;
+    stream->is_live = is_live;
 
     /* Build format string */
     if (is_live) {
@@ -836,22 +855,25 @@ static PrismError ytdlp_resolve(
 
     if (url_result.exit_code != 0 || !url_result.output || url_result.output[0] == '\0') {
         const char* error_msg = url_result.error ? url_result.error : "Failed to resolve URL";
-        out_stream->error = str_dup(error_msg);
+        stream->success = false;
+        stream->error = str_dup(error_msg);
         free_process_result(&url_result);
-        return PRISM_ERROR_NETWORK;
+        return stream;
     }
 
     char* direct_url = str_trim(url_result.output);
-    out_stream->direct_url = str_dup(direct_url);
+    stream->direct_url = str_dup(direct_url);
     free_process_result(&url_result);
 
-    if (!out_stream->direct_url) {
-        return PRISM_ERROR_OUT_OF_MEMORY;
+    if (!stream->direct_url) {
+        stream->success = false;
+        stream->error = str_dup("Out of memory");
+        return stream;
     }
 
     /* Check if HLS */
-    out_stream->is_hls = str_contains(out_stream->direct_url, ".m3u8") ||
-                         str_contains(out_stream->direct_url, "m3u8");
+    stream->is_hls = str_contains(stream->direct_url, ".m3u8") ||
+                     str_contains(stream->direct_url, "m3u8");
 
     /* Get additional info (title, resolution) */
     snprintf(args, sizeof(args),
@@ -867,48 +889,180 @@ static PrismError ytdlp_resolve(
         /* Title */
         char* line = strtok_r(lines, "\r\n", &saveptr);
         if (line) {
-            out_stream->title = str_dup(str_trim(line));
+            stream->title = str_dup(str_trim(line));
         }
 
         /* Width */
         line = strtok_r(NULL, "\r\n", &saveptr);
         if (line) {
-            out_stream->width = atoi(str_trim(line));
+            stream->width = atoi(str_trim(line));
         }
 
         /* Height */
         line = strtok_r(NULL, "\r\n", &saveptr);
         if (line) {
-            out_stream->height = atoi(str_trim(line));
+            stream->height = atoi(str_trim(line));
         }
     }
     free_process_result(&info_result);
 
-    return PRISM_OK;
+    stream->success = true;
+    stream->has_video = true;
+    stream->has_audio = true;
+
+    return stream;
 }
 
-static void ytdlp_free_stream(PrismResolvedStream* stream) {
-    if (!stream) return;
+static void ytdlp_destroy(PrismResolver* resolver) {
+    if (resolver) {
+        free(resolver);
+    }
+}
 
-    free((void*)stream->direct_url);
-    free((void*)stream->title);
-    free((void*)stream->error);
+static PrismError ytdlp_ensure_available(
+    PrismResolver* resolver,
+    PrismResolverProgressCallback progress,
+    void* user_data
+) {
+    (void)resolver;
 
-    if (stream->headers) {
-        for (int i = 0; stream->headers[i]; i++) {
-            free((void*)stream->headers[i]);
-        }
-        free((void*)stream->headers);
+    if (prism_ytdlp_is_available()) {
+        if (progress) progress(user_data, 1.0f, "yt-dlp available");
+        return PRISM_OK;
     }
 
-    if (stream->cookies) {
-        for (int i = 0; stream->cookies[i]; i++) {
-            free((void*)stream->cookies[i]);
-        }
-        free((void*)stream->cookies);
+    if (progress) progress(user_data, 0.0f, "Downloading yt-dlp...");
+
+    PrismError err = prism_ytdlp_download(NULL, NULL, NULL);
+
+    if (err == PRISM_OK) {
+        if (progress) progress(user_data, 1.0f, "yt-dlp downloaded");
     }
 
-    memset(stream, 0, sizeof(*stream));
+    return err;
+}
+
+static PrismError ytdlp_update_tool(
+    PrismResolver* resolver,
+    PrismResolverProgressCallback progress,
+    void* user_data
+) {
+    (void)resolver;
+
+    if (!prism_ytdlp_is_available()) {
+        return ytdlp_ensure_available(resolver, progress, user_data);
+    }
+
+    if (progress) progress(user_data, 0.0f, "Updating yt-dlp...");
+
+    /* Run yt-dlp -U to self-update */
+    ProcessResult result = run_process(g_config.ytdlp_path, "-U", g_config.process_timeout_ms);
+
+    PrismError err = (result.exit_code == 0) ? PRISM_OK : PRISM_ERROR_NETWORK;
+    free_process_result(&result);
+
+    if (progress) progress(user_data, 1.0f, err == PRISM_OK ? "Updated" : "Update failed");
+
+    return err;
+}
+
+static PrismResolvedStream* ytdlp_probe(PrismResolver* resolver, const char* url) {
+    (void)resolver;
+
+    PrismResolvedStream* stream = (PrismResolvedStream*)calloc(1, sizeof(PrismResolvedStream));
+    if (!stream) return NULL;
+
+    if (!url) {
+        stream->success = false;
+        stream->error = str_dup("URL is NULL");
+        return stream;
+    }
+
+    stream->original_url = str_dup(url);
+
+    if (!ensure_ytdlp_available()) {
+        stream->success = false;
+        stream->error = str_dup("yt-dlp not available");
+        return stream;
+    }
+
+    /* Get basic info without resolving URL */
+    char args[1024];
+    snprintf(args, sizeof(args),
+        "--no-warnings --no-check-certificate --print title --print is_live --print duration \"%s\"",
+        url);
+
+    ProcessResult result = run_process(g_config.ytdlp_path, args, g_config.process_timeout_ms);
+
+    if (result.exit_code != 0) {
+        stream->success = false;
+        stream->error = str_dup(result.error ? result.error : "Probe failed");
+        free_process_result(&result);
+        return stream;
+    }
+
+    if (result.output) {
+        char* lines = result.output;
+        char* saveptr = NULL;
+
+        /* Title */
+        char* line = strtok_r(lines, "\r\n", &saveptr);
+        if (line) {
+            stream->title = str_dup(str_trim(line));
+        }
+
+        /* is_live */
+        line = strtok_r(NULL, "\r\n", &saveptr);
+        if (line) {
+            char* trimmed = str_trim(line);
+            str_to_lower(trimmed);
+            stream->is_live = strcmp(trimmed, "true") == 0;
+        }
+
+        /* Duration */
+        line = strtok_r(NULL, "\r\n", &saveptr);
+        if (line) {
+            stream->duration = atof(str_trim(line));
+        }
+    }
+
+    free_process_result(&result);
+
+    stream->success = true;
+    return stream;
+}
+
+static const char* ytdlp_get_tool_version(PrismResolver* resolver) {
+    (void)resolver;
+
+    static char version[64] = {0};
+
+    if (!prism_ytdlp_is_available()) {
+        return NULL;
+    }
+
+    ProcessResult result = run_process(g_config.ytdlp_path, "--version", 5000);
+
+    if (result.exit_code == 0 && result.output) {
+        char* trimmed = str_trim(result.output);
+        strncpy(version, trimmed, sizeof(version) - 1);
+        version[sizeof(version) - 1] = '\0';
+    }
+
+    free_process_result(&result);
+
+    return version[0] ? version : NULL;
+}
+
+static void ytdlp_set_tool_path(PrismResolver* resolver, const char* path) {
+    (void)resolver;
+
+    if (path) {
+        strncpy(g_config.ytdlp_path, path, sizeof(g_config.ytdlp_path) - 1);
+        g_config.ytdlp_path[sizeof(g_config.ytdlp_path) - 1] = '\0';
+    } else {
+        g_config.ytdlp_path[0] = '\0';
+    }
 }
 
 static bool ytdlp_is_available(PrismResolver* resolver) {
@@ -921,12 +1075,17 @@ static bool ytdlp_is_available(PrismResolver* resolver) {
  * ========================================================================== */
 
 static const PrismResolverVTable s_ytdlp_vtable = {
+    .destroy = ytdlp_destroy,
     .can_resolve = ytdlp_can_resolve,
+    .is_available = ytdlp_is_available,
+    .ensure_available = ytdlp_ensure_available,
+    .update_tool = ytdlp_update_tool,
     .resolve = ytdlp_resolve,
     .resolve_async = NULL,  /* Not implemented yet */
     .cancel = NULL,
-    .free_stream = ytdlp_free_stream,
-    .is_available = ytdlp_is_available
+    .probe = ytdlp_probe,
+    .get_tool_version = ytdlp_get_tool_version,
+    .set_tool_path = ytdlp_set_tool_path
 };
 
 static PrismResolver* ytdlp_factory_create(void) {
@@ -934,15 +1093,10 @@ static PrismResolver* ytdlp_factory_create(void) {
     if (!resolver) return NULL;
 
     resolver->base.vtable = &s_ytdlp_vtable;
+    resolver->base.identifier = PRISM_YTDLP_PLUGIN_ID;
     resolver->is_available = prism_ytdlp_is_available();
 
     return &resolver->base;
-}
-
-static void ytdlp_factory_destroy(PrismResolver* resolver) {
-    if (resolver) {
-        free(resolver);
-    }
 }
 
 static const PrismResolverInfo* ytdlp_factory_get_info(void) {
@@ -951,14 +1105,34 @@ static const PrismResolverInfo* ytdlp_factory_get_info(void) {
         .capabilities = PRISM_RESOLVER_CAP_VOD |
                         PRISM_RESOLVER_CAP_LIVE |
                         PRISM_RESOLVER_CAP_QUALITY |
-                        PRISM_RESOLVER_CAP_HEADERS,
-        .hosts = s_known_hosts
+                        PRISM_RESOLVER_CAP_HEADERS |
+                        PRISM_RESOLVER_CAP_DOWNLOAD |
+                        PRISM_RESOLVER_CAP_UPDATE,
+        .hosts = s_known_hosts,
+        .tool_version = NULL  /* Set dynamically */
     };
     return &info;
 }
 
+static bool ytdlp_factory_can_handle(const char* url) {
+    if (!url || !url[0]) return false;
+
+    char host[256];
+    if (!extract_host(url, host, sizeof(host))) {
+        return false;
+    }
+
+    for (int i = 0; s_known_hosts[i]; i++) {
+        if (str_contains(host, s_known_hosts[i]) || str_contains(s_known_hosts[i], host)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 const PrismResolverFactory g_ytdlp_resolver_factory = {
-    .create = ytdlp_factory_create,
-    .destroy = ytdlp_factory_destroy,
-    .get_info = ytdlp_factory_get_info
+    .get_info = ytdlp_factory_get_info,
+    .can_handle = ytdlp_factory_can_handle,
+    .create = ytdlp_factory_create
 };

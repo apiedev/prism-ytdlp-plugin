@@ -58,7 +58,43 @@
 
 #define MAX_TESTS 32
 #define DEFAULT_TIMEOUT_SEC 60
-#define DEFAULT_QUALITY PRISM_QUALITY_AUTO
+#define PRISM_DEFAULT_QUALITY PRISM_QUALITY_AUTO
+
+/* Stub for stream cleanup since prism_core isn't built yet */
+static void free_resolved_stream(PrismResolvedStream* stream) {
+    if (!stream) return;
+
+    free((void*)stream->direct_url);
+    free((void*)stream->audio_url);
+    free((void*)stream->title);
+    free((void*)stream->channel);
+    free((void*)stream->thumbnail_url);
+    free((void*)stream->description);
+    free((void*)stream->video_codec);
+    free((void*)stream->audio_codec);
+    free((void*)stream->cookies);
+    free((void*)stream->error);
+    free((void*)stream->warning);
+    free((void*)stream->original_url);
+
+    if (stream->header_names) {
+        for (int i = 0; i < stream->header_count; i++) {
+            free((void*)stream->header_names[i]);
+        }
+        free((void*)stream->header_names);
+    }
+    if (stream->header_values) {
+        for (int i = 0; i < stream->header_count; i++) {
+            free((void*)stream->header_values[i]);
+        }
+        free((void*)stream->header_values);
+    }
+    if (stream->available_heights) {
+        free(stream->available_heights);
+    }
+
+    free(stream);
+}
 
 typedef enum TestCategory {
     TEST_CATEGORY_YOUTUBE,
@@ -159,19 +195,21 @@ static const TestCase g_test_cases[] = {
     /* ===== Vimeo Tests ===== */
     {
         .name = "vimeo_vod",
-        .description = "Vimeo Big Buck Bunny",
+        .description = "Vimeo video (may require login)",
         .url = PRISM_TEST_VIMEO_VOD,
         .category = TEST_CATEGORY_VIMEO,
-        .expect_live = false
+        .expect_live = false,
+        .skip_by_default = true  /* Vimeo now requires login for most videos */
     },
 
     /* ===== Dailymotion Tests ===== */
     {
         .name = "dailymotion_vod",
-        .description = "Dailymotion video",
+        .description = "Dailymotion video (may be unavailable)",
         .url = PRISM_TEST_DAILYMOTION_VOD,
         .category = TEST_CATEGORY_OTHER,
-        .expect_live = false
+        .expect_live = false,
+        .skip_by_default = true  /* Videos may be removed */
     },
 
     /* Sentinel */
@@ -286,7 +324,7 @@ static TestResults run_single_test(const TestCase* test, const Config* config) {
         results.result = TEST_RESULT_FAIL;
         snprintf(results.error_message, sizeof(results.error_message),
                  "Resolution failed: %s", stream->error ? stream->error : "Unknown error");
-        prism_resolved_stream_free(stream);
+        free_resolved_stream(stream);
         resolver->vtable->destroy(resolver);
         return results;
     }
@@ -328,7 +366,7 @@ static TestResults run_single_test(const TestCase* test, const Config* config) {
     }
 
     /* Cleanup */
-    prism_resolved_stream_free(stream);
+    free_resolved_stream(stream);
     resolver->vtable->destroy(resolver);
 
     if (config->verbose) {
@@ -444,7 +482,7 @@ static void list_all_tests(void) {
 static Config parse_args(int argc, char* argv[]) {
     Config config = {
         .timeout_sec = DEFAULT_TIMEOUT_SEC,
-        .quality = DEFAULT_QUALITY
+        .quality = PRISM_DEFAULT_QUALITY
     };
 
     for (int i = 1; i < argc; i++) {

@@ -63,20 +63,22 @@
 
 /* ============================================================================
  * Vimeo Test URLs
- * ============================================================================ */
+ * ============================================================================
+ * Note: Vimeo now requires login for most videos. These tests may fail.
+ */
 
-/* Vimeo public video - Big Buck Bunny */
+/* Vimeo staff picks - may require login */
 #ifndef PRISM_TEST_VIMEO_VOD
-#define PRISM_TEST_VIMEO_VOD "https://vimeo.com/1084537"
+#define PRISM_TEST_VIMEO_VOD "https://vimeo.com/824804225"
 #endif
 
 /* ============================================================================
  * Dailymotion Test URLs
  * ============================================================================ */
 
-/* Dailymotion public video */
+/* Dailymotion public video - creative commons */
 #ifndef PRISM_TEST_DAILYMOTION_VOD
-#define PRISM_TEST_DAILYMOTION_VOD "https://www.dailymotion.com/video/x2bu1a8"
+#define PRISM_TEST_DAILYMOTION_VOD "https://www.dailymotion.com/video/x8l4o2w"
 #endif
 
 /* ============================================================================
