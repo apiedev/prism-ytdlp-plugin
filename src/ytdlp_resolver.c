@@ -64,6 +64,17 @@ static const char* s_known_hosts[] = {
     NULL
 };
 
+/* Hosts that support multiple audio language tracks (AI-dubbed content).
+ * Only these hosts will have the language preference applied during resolution
+ * to avoid unnecessary processing overhead for other platforms. */
+static const char* s_language_capable_hosts[] = {
+    "youtube.com", "youtu.be", "www.youtube.com", "m.youtube.com",
+    NULL
+};
+
+/* Default preferred audio language */
+static const char* s_default_language = "en";
+
 /* Global configuration */
 static struct {
     char ytdlp_path[1024];
@@ -135,6 +146,122 @@ static char* str_trim(char* s) {
 
 static bool str_contains(const char* haystack, const char* needle) {
     return strstr(haystack, needle) != NULL;
+}
+
+/* Check if a URL is from a host that supports multiple audio languages */
+static bool is_language_capable_url(const char* url) {
+    if (!url || !url[0]) return false;
+
+    char host[256];
+    if (!extract_host(url, host, sizeof(host))) {
+        return false;
+    }
+
+    for (int i = 0; s_language_capable_hosts[i]; i++) {
+        if (str_contains(host, s_language_capable_hosts[i]) ||
+            str_contains(s_language_capable_hosts[i], host)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/* YouTube URL parameters that can interfere with language resolution */
+static const char* s_youtube_params_to_strip[] = {
+    "pp",   /* Playback preferences (can force language/audio track) */
+    "hl",   /* Interface language hint */
+    NULL
+};
+
+/*
+ * Sanitize a YouTube URL by removing parameters that can interfere with language preferences.
+ * The 'pp' parameter in particular can contain encoded playback settings that override
+ * the language preference set via yt-dlp's extractor-args.
+ *
+ * Returns a newly allocated sanitized URL (caller must free), or NULL on error.
+ */
+static char* sanitize_youtube_url(const char* url) {
+    if (!url || !url[0]) return str_dup(url);
+
+    /* Only process YouTube URLs */
+    if (!is_language_capable_url(url)) {
+        return str_dup(url);
+    }
+
+    /* Find query string */
+    const char* query_start = strchr(url, '?');
+    if (!query_start) {
+        return str_dup(url);
+    }
+
+    /* Calculate base URL length (before query) */
+    size_t base_len = (size_t)(query_start - url);
+
+    /* Allocate output buffer (worst case: same size as input) */
+    size_t url_len = strlen(url);
+    char* result = (char*)malloc(url_len + 1);
+    if (!result) return str_dup(url);
+
+    /* Copy base URL */
+    memcpy(result, url, base_len);
+    result[base_len] = '\0';
+
+    /* Parse and filter query parameters */
+    char* query_copy = str_dup(query_start + 1);
+    if (!query_copy) {
+        free(result);
+        return str_dup(url);
+    }
+
+    char* filtered_params = (char*)malloc(url_len + 1);
+    if (!filtered_params) {
+        free(result);
+        free(query_copy);
+        return str_dup(url);
+    }
+    filtered_params[0] = '\0';
+
+    char* saveptr = NULL;
+    char* param = strtok_r(query_copy, "&", &saveptr);
+    bool first_param = true;
+
+    while (param) {
+        /* Get parameter name (before '=') */
+        char* eq = strchr(param, '=');
+        size_t name_len = eq ? (size_t)(eq - param) : strlen(param);
+
+        /* Check if this parameter should be stripped */
+        bool should_strip = false;
+        for (int i = 0; s_youtube_params_to_strip[i]; i++) {
+            if (name_len == strlen(s_youtube_params_to_strip[i]) &&
+                strncmp(param, s_youtube_params_to_strip[i], name_len) == 0) {
+                should_strip = true;
+                break;
+            }
+        }
+
+        if (!should_strip) {
+            if (!first_param) {
+                strcat(filtered_params, "&");
+            }
+            strcat(filtered_params, param);
+            first_param = false;
+        }
+
+        param = strtok_r(NULL, "&", &saveptr);
+    }
+
+    free(query_copy);
+
+    /* Build final URL */
+    if (filtered_params[0]) {
+        strcat(result, "?");
+        strcat(result, filtered_params);
+    }
+
+    free(filtered_params);
+    return result;
 }
 
 /* ============================================================================
@@ -787,7 +914,15 @@ static PrismResolvedStream* ytdlp_resolve(
         return stream;
     }
 
-    /* Get quality from options */
+    /* Sanitize YouTube URLs to remove parameters that interfere with language selection */
+    char* sanitized_url = sanitize_youtube_url(url);
+    if (!sanitized_url) {
+        stream->success = false;
+        stream->error = str_dup("Out of memory");
+        return stream;
+    }
+
+    /* Get quality from options - default to 720p (HIGH) if AUTO */
     PrismStreamQuality quality = options ? options->quality : PRISM_QUALITY_AUTO;
     stream->requested_quality = quality;
 
@@ -802,17 +937,20 @@ static PrismResolvedStream* ytdlp_resolve(
         case PRISM_QUALITY_FULL:   height = 1080; break;
         case PRISM_QUALITY_QHD:    height = 1440; break;
         case PRISM_QUALITY_4K:     height = 2160; break;
+        case PRISM_QUALITY_AUTO:   height = 720; break;  /* Default to 720p for AUTO */
         default:
             /* For numeric values like 360, 720, etc., use directly */
             if (quality > 0 && quality <= 4320) {
                 height = (int)quality;
+            } else {
+                height = 720;  /* Fallback to 720p */
             }
             break;
     }
 
     /* Check if live stream first */
     char args[1024];
-    snprintf(args, sizeof(args), "--no-warnings --no-check-certificate --print is_live \"%s\"", url);
+    snprintf(args, sizeof(args), "--no-warnings --no-check-certificate --print is_live \"%s\"", sanitized_url);
 
     ProcessResult live_check = run_process(g_config.ytdlp_path, args, g_config.process_timeout_ms);
     bool is_live = false;
@@ -846,10 +984,22 @@ static PrismResolvedStream* ytdlp_resolve(
         }
     }
 
-    /* Get direct URL */
-    snprintf(args, sizeof(args),
-        "--no-warnings --no-check-certificate -f \"%s\" --get-url \"%s\"",
-        format_arg, url);
+    /* Get direct URL - include language preference for language-capable hosts (YouTube) */
+    bool use_language = is_language_capable_url(sanitized_url);
+    const char* language = (options && options->preferred_audio_language) ?
+                           options->preferred_audio_language : s_default_language;
+
+    if (use_language && language && language[0]) {
+        /* --extractor-args "youtube:lang=XX" prefers specified audio track for AI-dubbed videos
+         * --audio-multistreams ensures we get the preferred language when multiple tracks exist */
+        snprintf(args, sizeof(args),
+            "--no-warnings --no-check-certificate --extractor-args \"youtube:lang=%s\" --audio-multistreams -f \"%s\" --get-url \"%s\"",
+            language, format_arg, sanitized_url);
+    } else {
+        snprintf(args, sizeof(args),
+            "--no-warnings --no-check-certificate -f \"%s\" --get-url \"%s\"",
+            format_arg, sanitized_url);
+    }
 
     ProcessResult url_result = run_process(g_config.ytdlp_path, args, g_config.process_timeout_ms);
 
@@ -858,6 +1008,7 @@ static PrismResolvedStream* ytdlp_resolve(
         stream->success = false;
         stream->error = str_dup(error_msg);
         free_process_result(&url_result);
+        free(sanitized_url);
         return stream;
     }
 
@@ -868,6 +1019,7 @@ static PrismResolvedStream* ytdlp_resolve(
     if (!stream->direct_url) {
         stream->success = false;
         stream->error = str_dup("Out of memory");
+        free(sanitized_url);
         return stream;
     }
 
@@ -878,7 +1030,7 @@ static PrismResolvedStream* ytdlp_resolve(
     /* Get additional info (title, resolution) */
     snprintf(args, sizeof(args),
         "--no-warnings --no-check-certificate --print title --print width --print height \"%s\"",
-        url);
+        sanitized_url);
 
     ProcessResult info_result = run_process(g_config.ytdlp_path, args, g_config.process_timeout_ms);
 
@@ -906,6 +1058,7 @@ static PrismResolvedStream* ytdlp_resolve(
     }
     free_process_result(&info_result);
 
+    free(sanitized_url);
     stream->success = true;
     stream->has_video = true;
     stream->has_audio = true;
